@@ -1,0 +1,19 @@
+requests>=2.31.0
+python-dotenv>=1.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+aiohttp>=3.8.0
+
+# Telegram Bot
+python-telegram-bot>=20.0
+
+# Webserver (opcional - para API futura)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# Database (opcional - para persistência)
+sqlalchemy>=2.0.0
+
+# Monitoring
+prometheus-client>=0.17.0
+
