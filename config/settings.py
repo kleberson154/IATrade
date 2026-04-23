@@ -32,7 +32,7 @@ BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 # ============================================================================
 # BOT BEHAVIOR
 # ============================================================================
-DRY_RUN = os.getenv("DRY_RUN", "False")  # True para simulação, False para execução real
+DRY_RUN = os.getenv("DRY_RUN", "False").strip().lower() in ("1", "true", "yes", "y")  # True para simulação, False para execução real
 SYMBOL = os.getenv("SYMBOL", "BTCUSDT")  # Ativo a tradear
 TIMEFRAME = os.getenv("TIMEFRAME", "5")  # Em minutos (5m candles)
 TIMEFRAMES_FOR_ANALYSIS = ["5", "15", "1h"]  # Multi-timeframe
