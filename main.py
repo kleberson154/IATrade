@@ -7,6 +7,7 @@ Ponto de entrada principal do sistema
 import logging
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from config.settings import (
@@ -58,11 +59,14 @@ class TradingBot:
     
     def _setup_logging(self):
         """Configura logging"""
+        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
             handlers=[
-                logging.FileHandler('logs/trading_bot.log'),
+                logging.FileHandler(str(log_dir / 'trading_bot.log')),
                 logging.StreamHandler()
             ]
         )

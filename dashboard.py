@@ -4,8 +4,8 @@ Dashboard - Monitora o bot e envia notificações periódicas via Telegram
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Optional
 import signal
 from dotenv import load_dotenv
@@ -17,11 +17,13 @@ from utils.trade_tracker import TradeTracker
 load_dotenv()
 
 # Configurar logging
+log_dir = Path(__file__).resolve().parent / "logs"
+log_dir.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
     handlers=[
-        logging.FileHandler('logs/dashboard.log'),
+        logging.FileHandler(str(log_dir / 'dashboard.log')),
         logging.StreamHandler()
     ]
 )

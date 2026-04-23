@@ -17,11 +17,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configurar logging
+log_dir = Path(__file__).resolve().parent / "logs"
+log_dir.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(name)s | %(levelname)s | %(message)s',
     handlers=[
-        logging.FileHandler('logs/bot_manager.log'),
+        logging.FileHandler(str(log_dir / 'bot_manager.log')),
         logging.StreamHandler()
     ]
 )
