@@ -4,8 +4,10 @@ Coordena todos os agentes de IA para execução disciplinada
 Ponto de entrada principal do sistema
 """
 
+import argparse
 import logging
 import asyncio
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -329,37 +331,6 @@ class TradingBot:
         self.logger.info("🛑 Bot parado")
         self.print_performance_summary()
     
-    async def backtest_simulation(self, num_cycles: int = 10):
-        """Simula trades para teste"""
-        self.logger.info(f"Iniciando simulação com {num_cycles} ciclos")
-        
-        for i in range(num_cycles):
-            self.logger.info(f"\n--- Ciclo {i+1}/{num_cycles} ---")
-            
-            trade = await self.execute_trading_cycle()
-            
-            if trade:
-                # Simula resultado
-                import random
-                is_win = random.random() < 0.55  # 55% win rate simulado
-                
-                if is_win:
-                    trade.pnl_usdt = random.uniform(10, 50)
-                    trade.pnl_percent = (trade.pnl_usdt / 1000) * 100
-                else:
-                    trade.pnl_usdt = -random.uniform(5, 30)
-                    trade.pnl_percent = (trade.pnl_usdt / 1000) * 100
-                
-                trade.status = TradeStatus.CLOSED
-                trade.close_time = datetime.utcnow()
-                
-                self.performance_agent.add_closed_trade(trade)
-                self.risk_agent.record_trade_result(trade)
-            
-            await asyncio.sleep(0.5)
-        
-        self.print_performance_summary()
-    
     def get_status(self) -> str:
         """Retorna status geral do bot"""
         return f"""
@@ -374,24 +345,41 @@ Bot Status:
 
 def main():
     """Ponto de entrada"""
+    parser = argparse.ArgumentParser(description="IaTrade Trading Bot")
+    parser.add_argument("--auto", action="store_true", help="Iniciar automaticamente em modo de serviço")
+    parser.add_argument("--status", action="store_true", help="Exibir status do bot e sair")
+    args = parser.parse_args()
+
     bot = TradingBot()
-    
-    # Modo de teste
-    print("\n[BOT] Escolha o modo:")
-    print("1. Simulação (backtest 10 trades)")
-    print("2. Live trading (DRY_RUN=True)")
-    print("3. Status")
-    
-    choice = input("\nEscolha [1/2/3]: ").strip()
-    
-    if choice == "1":
-        asyncio.run(bot.backtest_simulation(num_cycles=10))
-    elif choice == "2":
+
+    if args.status:
+        print(bot.get_status())
+        return
+
+    if args.auto or not sys.stdin.isatty():
         try:
             asyncio.run(bot.start_trading_loop(interval_seconds=5))
         except KeyboardInterrupt:
             print("\n⏹️ Parado")
-    elif choice == "3":
+        return
+
+    # Modo de teste interativo
+    print("\n[BOT] Escolha o modo:")
+    print("1. Live trading (DRY_RUN=True)")
+    print("2. Status")
+    
+    try:
+        choice = input("\nEscolha [1/2]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\n⏹️ Parado")
+        return
+    
+    if choice == "1":
+        try:
+            asyncio.run(bot.start_trading_loop(interval_seconds=5))
+        except KeyboardInterrupt:
+            print("\n⏹️ Parado")
+    elif choice == "2":
         print(bot.get_status())
     else:
         print("Opção inválida")

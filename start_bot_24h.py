@@ -51,7 +51,7 @@ class BotManager:
             
             # Iniciar processo
             self.bot_process = subprocess.Popen(
-                [sys.executable, "main.py"],
+                [sys.executable, "main.py", "--auto"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,

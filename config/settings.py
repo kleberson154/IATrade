@@ -4,10 +4,15 @@ Configurações Centralizadas - IaTrade Bot
 Todas as settings do bot em um único lugar
 """
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # ============================================================================
 # CONTA E RISCO
 # ============================================================================
-ACCOUNT_SIZE_USDT = 100  # Tamanho da conta em USDT (demo)
+ACCOUNT_SIZE_USDT = int(os.getenv("ACCOUNT_SIZE_USDT", "100"))  # Tamanho da conta em USDT (demo)
 RISK_PER_TRADE_PERCENT = 1.0  # Risco por trade em % da conta (1%)
 MIN_RR_RATIO = 1.5  # Razão mínima Risk/Reward (rejeita abaixo disso)
 MAX_TRADES_PER_DAY = 10  # Limite de trades por dia (disciplina)
@@ -15,21 +20,21 @@ MAX_TRADES_PER_DAY = 10  # Limite de trades por dia (disciplina)
 # ============================================================================
 # BYBIT API
 # ============================================================================
-BYBIT_API_MODE = "demo"  # "testnet" | "demo" | "real"
+BYBIT_API_MODE = os.getenv("BYBIT_API_MODE", os.getenv("BYBIT_MODE", "demo"))  # "testnet" | "demo" | "real"
 BYBIT_TESTNET_URL = "https://api-testnet.bybit.com"
 BYBIT_DEMO_URL = "https://api-demo.bybit.com"
 BYBIT_REAL_URL = "https://api.bybit.com"
 
 # Credenciais (deixar vazia para DEMO/TESTNET)
-BYBIT_API_KEY = ""  # Colocar sua chave aqui se for REAL
-BYBIT_API_SECRET = ""  # Colocar seu secret aqui se for REAL
+BYBIT_API_KEY = os.getenv("BYBIT_API_KEY", "")
+BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET", "")
 
 # ============================================================================
 # BOT BEHAVIOR
 # ============================================================================
-DRY_RUN = True  # True = não executa ordens reais, apenas simula
-SYMBOL = "BTCUSDT"  # Ativo a tradear
-TIMEFRAME = "5"  # Em minutos (5m candles)
+DRY_RUN = os.getenv("DRY_RUN", "False")  # True para simulação, False para execução real
+SYMBOL = os.getenv("SYMBOL", "BTCUSDT")  # Ativo a tradear
+TIMEFRAME = os.getenv("TIMEFRAME", "5")  # Em minutos (5m candles)
 TIMEFRAMES_FOR_ANALYSIS = ["5", "15", "1h"]  # Multi-timeframe
 
 # ============================================================================

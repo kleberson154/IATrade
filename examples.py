@@ -21,7 +21,7 @@ async def example_market_analysis():
     bybit = BybitConnector(mode=BYBIT_API_MODE)
     
     # Busca candles
-    klines = bybit.get_klines("BTCUSDT", "5m", limit=50)
+    klines = bybit.get_klines("BTCUSDT", "5m", limit=200)
     print(f"Candles obtidos: {len(klines)}")
     
     if klines:

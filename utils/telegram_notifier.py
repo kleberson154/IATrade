@@ -29,12 +29,14 @@ class TelegramNotifier:
         """
         self.token = token or os.getenv("TELEGRAM_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+        self.enabled = bool(self.token and self.chat_id)
         
-        if not self.token or not self.chat_id:
-            raise ValueError("TELEGRAM_TOKEN e TELEGRAM_CHAT_ID são obrigatórios")
-        
-        self.api_url = f"{self.BASE_URL}{self.token}"
-        logger.info(f"TelegramNotifier inicializado para chat {self.chat_id}")
+        if not self.enabled:
+            logger.warning("Telegram disabled: TELEGRAM_TOKEN and/or TELEGRAM_CHAT_ID not configured")
+            self.api_url = None
+        else:
+            self.api_url = f"{self.BASE_URL}{self.token}"
+            logger.info(f"TelegramNotifier inicializado para chat {self.chat_id}")
     
     async def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         """
@@ -47,6 +49,10 @@ class TelegramNotifier:
         Returns:
             True se enviado com sucesso
         """
+        if not self.enabled:
+            logger.warning("Telegram message skipped because notifier is disabled")
+            return False
+
         try:
             payload = {
                 "chat_id": self.chat_id,
@@ -98,7 +104,7 @@ class TelegramNotifier:
 <b>Take Profit:</b> ${trade_data.get('take_profit', 0):.2f}
 <b>Tamanho:</b> {trade_data.get('position_size', 0):.4f}
 <b>Risco/Recompensa:</b> 1:{trade_data.get('rr_ratio', 0):.2f}
-<b>Hora:</b> {trade_data.get('time', 'N/A')}
+<b>Hora:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             """.strip()
             
             return await self.send_message(message)

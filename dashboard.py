@@ -4,14 +4,15 @@ Dashboard - Monitora o bot e envia notificações periódicas via Telegram
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 import signal
 from dotenv import load_dotenv
 
+from connectors.bybit_connector import BybitConnector
 from utils.telegram_notifier import TelegramNotifier
-from utils.trade_tracker import TradeTracker
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -36,19 +37,16 @@ class Dashboard:
     def __init__(
         self,
         update_interval: int = 7200,  # 2 horas em segundos
-        log_file: str = "logs/bot_trades.log"
     ):
         """
         Args:
             update_interval: Intervalo de atualização em segundos (default: 2h)
-            log_file: Arquivo de log de trades
         """
         self.update_interval = update_interval
-        self.log_file = log_file
-        
-        # Inicializar componentes
         self.notifier = TelegramNotifier()
-        self.tracker = TradeTracker(log_file)
+        self.connector = BybitConnector()
+        self.symbol = os.getenv('SYMBOL', 'BTCUSDT')
+        self.trade_history_start = self._resolve_trade_history_start()
         
         # Estado
         self.running = False
@@ -56,6 +54,45 @@ class Dashboard:
         self.trades_notified = set()  # IDs das trades já notificadas
         
         logger.info(f"Dashboard inicializado (intervalo: {update_interval}s)")
+        logger.info(f"Dashboard vai buscar trades a partir de: {self.trade_history_start.isoformat()}")
+    
+    def _resolve_trade_history_start(self) -> datetime:
+        """Resolve a data inicial para buscar histórico de trades usando variável de ambiente."""
+        start_value = os.getenv("TRADE_HISTORY_START", "").strip()
+        if start_value:
+            for fmt in (
+                "%d/%m/%Y %H:%M",
+                "%d/%m/%Y %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+            ):
+                try:
+                    return datetime.strptime(start_value, fmt)
+                except ValueError:
+                    continue
+            logger.warning(f"Formato inválido em TRADE_HISTORY_START: {start_value}. Usando 2h atrás.")
+        return datetime.now() - timedelta(hours=2)
+    
+    def _fetch_trade_history(self) -> list:
+        """Busca histórico de trades no Bybit e filtra por data de início."""
+        trades = self.connector.get_trade_history(symbol=self.symbol, limit=100)
+        filtered = []
+
+        for trade in trades:
+            exec_time = trade.get("execTime")
+            if not exec_time:
+                continue
+
+            try:
+                exec_dt = datetime.fromtimestamp(int(exec_time) / 1000)
+            except Exception:
+                continue
+
+            if exec_dt >= self.trade_history_start:
+                trade["_exec_dt"] = exec_dt
+                filtered.append(trade)
+
+        return sorted(filtered, key=lambda item: item["_exec_dt"])
     
     async def check_new_trades(self) -> bool:
         """
@@ -65,39 +102,66 @@ class Dashboard:
             True se alguma trade foi notificada
         """
         try:
-            open_trades = self.tracker.get_open_trades()
-            new_trades = [t for t in open_trades if t.trade_id not in self.trades_notified]
+            trades = self._fetch_trade_history()
+            new_trades = [t for t in trades if t.get("execId") not in self.trades_notified]
             
             if not new_trades:
                 return False
             
-            logger.info(f"Encontradas {len(new_trades)} novas trades")
+            logger.info(f"Encontradas {len(new_trades)} novas trades na Bybit")
             
             for trade in new_trades:
-                # Preparar dados
+                exec_id = trade.get("execId") or str(trade.get("orderId", "unknown"))
+                direction = trade.get("side", "Buy").lower()
+                entry_price = float(trade.get("execPrice", 0) or 0)
+                entry_time = datetime.fromtimestamp(int(trade.get("execTime", 0)) / 1000).isoformat()
+
                 trade_data = {
-                    'symbol': trade.symbol,
-                    'direction': trade.direction,
-                    'entry_price': trade.entry_price,
-                    'stop_loss': trade.stop_loss,
-                    'take_profit': trade.take_profit,
-                    'position_size': trade.position_size,
-                    'rr_ratio': trade.calculate_rr_ratio(),
-                    'time': trade.entry_time
+                    'symbol': trade.get('symbol', self.symbol),
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'stop_loss': float(trade.get('stopLoss', 0) or 0),
+                    'take_profit': float(trade.get('takeProfit', 0) or 0),
+                    'position_size': float(trade.get('execQty', 0) or 0),
+                    'rr_ratio': 0.0,
+                    'time': entry_time
                 }
                 
-                # Enviar notificação
                 success = await self.notifier.send_trade_notification(trade_data)
                 
                 if success:
-                    self.trades_notified.add(trade.trade_id)
-                    logger.info(f"Notificação enviada para trade {trade.trade_id}")
+                    self.trades_notified.add(exec_id)
+                    logger.info(f"Notificação enviada para trade {exec_id}")
             
             return True
         except Exception as e:
             logger.error(f"Erro ao verificar novas trades: {e}")
             return False
     
+    def _calculate_stats_from_history(self, trades: list) -> Dict:
+        """Calcula estatísticas básicas do histórico de trades."""
+        total = len(trades)
+        buy_trades = sum(1 for t in trades if t.get('side', '').lower() == 'buy')
+        sell_trades = sum(1 for t in trades if t.get('side', '').lower() == 'sell')
+        total_quantity = sum(float(t.get('execQty', 0) or 0) for t in trades)
+
+        return {
+            'total_trades': total,
+            'wins': 0,
+            'losses': 0,
+            'win_rate': 0.0,
+            'total_pnl': 0.0,
+            'avg_win': 0.0,
+            'avg_loss': 0.0,
+            'rr_ratio': 0.0,
+            'max_drawdown': 0.0,
+            'max_win': 0.0,
+            'max_loss': 0.0,
+            'buy_trades': buy_trades,
+            'sell_trades': sell_trades,
+            'total_quantity': total_quantity,
+        }
+
     async def send_periodic_report(self) -> bool:
         """
         Envia relatório periódico de estatísticas
@@ -106,19 +170,14 @@ class Dashboard:
             True se relatório foi enviado
         """
         try:
-            # Buscar trades do período
-            hours = self.update_interval / 3600  # converter segundos para horas
-            period_trades = self.tracker.get_trades_in_period(int(hours) + 1)
-            
-            # Calcular estatísticas
-            stats = self.tracker.calculate_stats(period_trades)
-            stats['period'] = f"Últimas {int(hours)}h"
-            
-            if stats['total_trades'] == 0:
+            trades = self._fetch_trade_history()
+            if not trades:
                 logger.info("Nenhuma trade no período para relatório")
                 return False
             
-            # Enviar relatório
+            stats = self._calculate_stats_from_history(trades)
+            stats['period'] = f"Últimas {int(self.update_interval / 3600)}h"
+            
             success = await self.notifier.send_stats_report(stats)
             
             if success:
@@ -168,8 +227,8 @@ class Dashboard:
             # Enviar mensagem de startup
             bot_info = {
                 'version': '1.0.0',
-                'mode': os.getenv('BYBIT_MODE', 'demo'),
-                'symbols': os.getenv('SYMBOLS', 'BTCUSDT')
+                'mode': os.getenv('BYBIT_API_MODE', 'demo').upper(),
+                'symbols': os.getenv('SYMBOL', 'BTCUSDT')
             }
             await self.notifier.send_startup_message(bot_info)
             
@@ -195,9 +254,8 @@ async def main():
     
     # Criar dashboard
     update_interval = int(os.getenv('DASHBOARD_UPDATE_INTERVAL', 7200))
-    log_file = os.getenv('LOG_FILE', 'logs/bot_trades.log')
     
-    dashboard = Dashboard(update_interval=update_interval, log_file=log_file)
+    dashboard = Dashboard(update_interval=update_interval)
     
     # Configurar tratamento de sinais para shutdown gracioso
     def signal_handler(sig, frame):
