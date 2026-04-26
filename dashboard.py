@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import signal
 from dotenv import load_dotenv
+import time
 
 from connectors.bybit_connector import BybitConnector
 from utils.telegram_notifier import TelegramNotifier
@@ -32,16 +33,10 @@ logger = logging.getLogger("Dashboard")
 
 
 class Dashboard:
-    """Dashboard que monitora o bot e envia notificações"""
-    
     def __init__(
         self,
         update_interval: int = 7200,  # 2 horas em segundos
     ):
-        """
-        Args:
-            update_interval: Intervalo de atualização em segundos (default: 2h)
-        """
         self.update_interval = update_interval
         self.notifier = TelegramNotifier()
         self.connector = BybitConnector()
@@ -52,26 +47,14 @@ class Dashboard:
         self.running = False
         self.last_update = datetime.now()
         self.trades_notified = set()  # IDs das trades já notificadas
+        self.start_time = int(time.time() * 1000) 
+        logger.info(f"Dashboard monitorando novas trades a partir de agora: {self.start_time}")
         
         logger.info(f"Dashboard inicializado (intervalo: {update_interval}s)")
         logger.info(f"Dashboard vai buscar trades a partir de: {self.trade_history_start.isoformat()}")
     
     def _resolve_trade_history_start(self) -> datetime:
-        """Resolve a data inicial para buscar histórico de trades usando variável de ambiente."""
-        start_value = os.getenv("TRADE_HISTORY_START", "").strip()
-        if start_value:
-            for fmt in (
-                "%d/%m/%Y %H:%M",
-                "%d/%m/%Y %H:%M:%S",
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%dT%H:%M:%S",
-            ):
-                try:
-                    return datetime.strptime(start_value, fmt)
-                except ValueError:
-                    continue
-            logger.warning(f"Formato inválido em TRADE_HISTORY_START: {start_value}. Usando 2h atrás.")
-        return datetime.now() - timedelta(hours=2)
+        return datetime.now()
     
     def _fetch_trade_history(self) -> list:
         """Busca histórico de trades no Bybit e filtra por data de início."""

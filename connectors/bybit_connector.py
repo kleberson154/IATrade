@@ -42,16 +42,6 @@ class BybitConnector:
         
         self.base_url = self.ENDPOINTS[self.mode]
         self.logger.info(f"[OK] BybitConnector inicializado: {self.mode.upper()} mode")
-        
-
-    
-    def _generate_signature(self, params: str) -> str:
-        """Gera assinatura HMAC para autenticação"""
-        return hmac.new(
-            self.api_secret.encode(),
-            params.encode(),
-            hashlib.sha256
-        ).hexdigest()
     
     def _build_query_string(self, params: Dict) -> str:
         if not params:
@@ -60,41 +50,52 @@ class BybitConnector:
         sorted_items = sorted((k, v) for k, v in params.items() if v is not None)
         return urlencode(sorted_items, safe=":")
 
-    def _request(self, method: str, endpoint: str, params: Dict = None, 
-                data: Dict = None) -> Dict:
-        """Faz requisição à API"""
+    def _generate_signature(self, timestamp: str, payload: str) -> str:
+        recv_window = "5000"
+        param_str = timestamp + self.api_key + recv_window + payload
         
+        return hmac.new(
+            self.api_secret.encode("utf-8"),
+            param_str.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+
+    def _request(self, method: str, endpoint: str, params: Dict = None) -> Dict:
+        method = method.upper()
+        timestamp = str(int(time.time() * 1000))
+        recv_window = "5000"
+        
+        if method == "GET":
+            payload = urlencode(params) if params else ""
+            full_url = f"{self.base_url}{endpoint}"
+            if payload:
+                full_url += f"?{payload}"
+        else:
+            payload = json.dumps(params) if params else ""
+            full_url = f"{self.base_url}{endpoint}"
+
+        signature = self._generate_signature(timestamp, payload)
+
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": recv_window,
+            "Content-Type": "application/json"
+        }
+
         try:
-            url = f"{self.base_url}{endpoint}"
-            timestamp = str(int(time.time() * 1000))
-            recv_window = "5000"
-
-            body = json.dumps(data, separators=(",", ":"), sort_keys=True) if data else ""
-            query_string = self._build_query_string(params)
-            sign_payload = f"{timestamp}{method.upper()}{endpoint}{query_string}{body}"
-            signature = hmac.new(
-                self.api_secret.encode(),
-                sign_payload.encode(),
-                hashlib.sha256
-            ).hexdigest()
-
-            headers = {
-                "X-BAPI-API-KEY": self.api_key,
-                "X-BAPI-SIGN": signature,
-                "X-BAPI-TIMESTAMP": timestamp,
-                "X-BAPI-RECV-WINDOW": recv_window,
-                "Content-Type": "application/json",
-            }
-            
             if method == "GET":
-                response = requests.get(url, params=params, headers=headers, timeout=10)
+                response = requests.get(full_url, headers=headers, timeout=10)
             else:
-                response = requests.post(url, json=data, headers=headers, timeout=10)
-            
+                response = requests.post(full_url, headers=headers, data=payload, timeout=10)
+            if response.status_code != 200:
+                self.logger.error(f"Erro Bybit {response.status_code}: {response.text}")
+
             return response.json()
-        
+            
         except Exception as e:
-            self.logger.error(f"Erro na requisição: {e}")
+            self.logger.error(f"Erro na requisição {method} {endpoint}: {str(e)}")
             return {"retCode": -1, "retMsg": str(e)}
     
     def get_account_info(self) -> Dict:
@@ -328,7 +329,6 @@ class BybitConnector:
         
         if result.get("retCode") == 0:
             executions = result.get("result", {}).get("list", [])
-            self.logger.info(f"[OK] Carregado histórico: {len(executions)} execuções de trade")
             return executions
         
         self.logger.warning(f"Erro ao buscar trade history: {result.get('retMsg')}")

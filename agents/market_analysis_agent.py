@@ -34,18 +34,6 @@ class MarketAnalysisAgent:
         self.analysis_history: List[Dict] = []
     
     def analyze_candle_data(self, candles_data: Dict[str, List]) -> Dict:
-        """
-        Analisa dados de candles e retorna análise completa
-        
-        Args:
-            candles_data: {
-                "closes": [...],
-                "highs": [...],
-                "lows": [...],
-                "volumes": [...],
-                "current_price": float,
-            }
-        """
         analysis = {
             "timestamp": None,
             "market_analysis": {},
