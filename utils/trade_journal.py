@@ -8,7 +8,7 @@ import json
 import csv
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from models.trade_models import Trade
 
 
@@ -26,6 +26,7 @@ class TradeJournal:
         self.json_file = self.log_dir / f"trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
         self.trades: List[Trade] = []
+        self.is_breakeven = False
         self._init_csv()
     
     def _init_csv(self):
@@ -151,3 +152,25 @@ class TradeJournal:
     def get_journal_path(self) -> str:
         """Retorna path dos arquivos de journal"""
         return str(self.log_dir)
+    
+    def get_active_trade(self, symbol: str) -> Optional[Trade]:
+        """Busca uma trade aberta para o símbolo específico"""
+        for trade in self.trades:
+            # Assume que status OPEN significa que a posição está rodando
+            if trade.symbol == symbol and trade.status.value == "open":
+                return trade
+        return None
+
+    def mark_as_breakeven(self, symbol: str):
+        """Marca a trade como protegida em breakeven"""
+        trade = self.get_active_trade(symbol)
+        if trade:
+            # Adicionamos uma nota ou atributo dinâmico
+            trade.note = f"{trade.note} | [PROTECTED-BE]"
+            # Se sua classe Trade tiver o atributo, melhor:
+            if hasattr(trade, 'is_breakeven'):
+                trade.is_breakeven = True
+            
+            self.logger.info(f"📓 Journal: Trade {symbol} marcada como Breakeven.")
+            # Atualizamos os arquivos para refletir a mudança
+            self._write_to_json()

@@ -52,10 +52,9 @@ class BotManager:
             # Iniciar processo
             self.bot_process = subprocess.Popen(
                 [sys.executable, "main.py", "--auto"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                bufsize=1
+                stdout=subprocess.DEVNULL, # O log já é salvo no arquivo pelo main.py
+                stderr=subprocess.STDOUT,
+                universal_newlines=True
             )
             
             logger.info(f"Bot iniciado com PID: {self.bot_process.pid}")

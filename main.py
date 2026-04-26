@@ -1,9 +1,3 @@
-"""
-Trading Bot Orchestrator
-Coordena todos os agentes de IA para execução disciplinada
-Ponto de entrada principal do sistema
-"""
-
 import argparse
 import logging
 import asyncio
@@ -22,15 +16,10 @@ from agents.risk_management_agent import RiskManagementAgent
 from agents.execution_agent import ExecutionAgent
 from agents.performance_monitor_agent import PerformanceMonitorAgent
 from utils.trade_journal import TradeJournal
-from models.trade_models import Trade, TradeStatus
+from models.trade_models import Trade, TradeStatus, TradeDirection
 
 
 class TradingBot:
-    """
-    Orquestrador principal do bot de trading
-    Coordena: Market Analysis → Risk Management → Execution → Performance Monitoring
-    """
-    
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
         self._setup_logging()
@@ -239,20 +228,77 @@ class TradingBot:
             # Passo 4: Execução
             exec_success, exec_msg = self.execution_agent.execute_trade(trade)
             
-            if not exec_success:
+            if exec_success:
+                # Passo 5: Registros
+                self.risk_agent.record_trade_execution(trade)
+                self.journal.record_trade(trade)
+                self.trades_today += 1
+                return trade
+            else:
                 self.logger.error(f"Falha na execução: {exec_msg}")
                 return None
-            
-            # Passo 5: Registros
-            self.risk_agent.record_trade_execution(trade)
-            self.journal.record_trade(trade)
-            self.trades_today += 1
-            
-            return trade
         
         except Exception as e:
             self.logger.error(f"Erro no ciclo de trading: {e}", exc_info=True)
             return None
+        
+    async def manage_active_positions(self):
+        """Monitora posições abertas para aplicar Breakeven e Trailing"""
+        try:
+            # 1. Busca posições reais na Bybit através do conector
+            positions = self.bybit.get_open_positions()
+            
+            if not positions:
+                return
+
+            for pos in positions:
+                symbol = pos.get('symbol')
+                side = pos.get('side')
+                entry_price = float(pos.get('entryPrice', 0))
+                current_price = await self.bybit.get_latest_price(symbol)
+                
+                # Buscamos os detalhes do setup que salvamos no nosso journal/estado local
+                trade_details = self.journal.get_active_trade(symbol)
+                
+                if not trade_details or trade_details.get('is_breakeven'):
+                    continue
+
+                # 2. Verifica se atingiu o gatilho de Breakeven (TP1)
+                tp1_price = trade_details.get('tp1_price')
+                
+                should_trigger = False
+                if side == 'Buy' and current_price >= tp1_price:
+                    should_trigger = True
+                elif side == 'Sell' and current_price <= tp1_price:
+                    should_trigger = True
+
+                # 3. Executa a movimentação do Stop Loss para o preço de entrada
+                if should_trigger:
+                    self.logger.info(f"🛡️ Gatilho de Breakeven atingido para {symbol} em {current_price}")
+                    
+                    # Quando o TP1 é atingido, a Bybit executará automaticamente a 1ª ordem LIMIT 
+                    # que enviamos (os 50% da posição).
+                    # Você só precisa mover o STOP da posição RESTANTE.
+                    success = self.bybit.set_trading_stop(
+                        symbol=symbol,
+                        stop_loss=entry_price, 
+                        side=side
+                    )
+                    
+                    if success:
+                        self.logger.info(f"✅ Stop Loss movido para Breakeven (${entry_price})")
+                        # Atualiza o estado local para não processar novamente
+                        self.journal.mark_as_breakeven(symbol)
+                        
+                        # Notifica via Telegram (se você tiver o notifier instanciado)
+                        if hasattr(self, 'notifier'):
+                            await self.notifier.send_message(
+                                f"🛡️ **Breakeven Ativado: {symbol}**\n"
+                                f"Preço atingiu TP1. Risco agora é ZERO."
+                            )
+
+        except Exception as e:
+            self.logger.error(f"Erro ao gerenciar posições: {e}")
     
     def process_closed_trades(self):
         """Processa trades fechadas para performance monitoring"""
@@ -307,6 +353,8 @@ class TradingBot:
                         
                         if trade:
                             self.print_agent_status()
+                            
+                    await self.manage_active_positions()
                     
                     # Processa trades fechadas
                     self.process_closed_trades()

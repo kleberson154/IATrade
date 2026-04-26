@@ -148,16 +148,18 @@ class ExecutionAgent:
     def _set_take_profits(self, trade: Trade, entry_order_id: str) -> bool:
         """Define múltiplos take profits"""
         try:
+            if not trade.tp1: 
+                return False
             # Bybit permite até 3 TP
             self.logger.info("Colocando take profits múltiplos")
             
             self.bybit.set_take_profits(
-                symbol="BTCUSDT",
+                symbol=trade.symbol, # Use trade.symbol em vez de fixar "BTCUSDT"
                 order_id=entry_order_id,
                 tp_levels={
-                    "tp1": {"price": trade.tp1, "percent": 50},  # 50% da posição
-                    "tp2": {"price": trade.tp2, "percent": 30},  # 30% da posição
-                    "tp3": {"price": trade.tp3, "percent": 20},  # 20% da posição
+                    "tp1": {"price": trade.tp1, "percent": 50},
+                    "tp2": {"price": trade.tp2, "percent": 30},
+                    "tp3": {"price": trade.tp3, "percent": 20},
                 }
             )
             

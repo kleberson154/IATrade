@@ -4,14 +4,15 @@ Backtester - Simula o bot de trading com dados históricos reais
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Set
 import json
 from pathlib import Path
 
 from connectors.data_provider import CandleData, DataProvider
-from core.stop_loss_calculator import StopLossCalculator, TradeDirection
+from core.stop_loss_calculator import StopLossCalculator
 from core.take_profit_calculator import TakeProfitCalculator
+from models.trade_models import TradeDirection
 
 @dataclass
 class BacktestTrade:
@@ -24,6 +25,8 @@ class BacktestTrade:
     position_size: float
     stop_loss: float
     take_profits: List[float]
+    is_protected: bool = False
+    hit_tps: Set[int] = field(default_factory=set)
     
     exit_price: float = 0.0
     exit_time: int = 0
@@ -32,6 +35,10 @@ class BacktestTrade:
     pnl_percent: float = 0.0
     
     def calculate_pnl(self):
+        if self.exit_price == 0: # Trade ainda aberta ou bugada
+            self.pnl_usd = 0
+            self.pnl_percent = 0
+            return
         """Calcula o P&L da trade"""
         if self.direction == TradeDirection.LONG:
             self.pnl_usd = (self.exit_price - self.entry_price) * self.position_size
@@ -145,7 +152,9 @@ class Backtester:
         self.trades: List[BacktestTrade] = []
         self.stats = BacktestStats()
         
-        self.sl_calculator = StopLossCalculator(stop_distance_percent=0.15)
+        self.active_trade: Optional[BacktestTrade] = None
+        
+        self.sl_calculator = StopLossCalculator(stop_distance_percent=2.5)
         self.tp_calculator = TakeProfitCalculator()
     
     async def run(
@@ -154,23 +163,18 @@ class Backtester:
         interval: str = "5",
         start_date: datetime = None,
         end_date: datetime = None,
-        setup_detector = None
+        setup_detector = None,
+        last_exit_index = -100
     ) -> BacktestStats:
-        """
-        Executa o backteste
-        
-        Args:
-            symbol: Par a tradear
-            interval: Intervalo de candles
-            start_date: Data inicial
-            end_date: Data final
-            setup_detector: Função que detecta setups (retorna TradeDirection ou None)
-        
-        Returns:
-            BacktestStats com resultado do backteste
-        """
-        print(f"\n[BACKTESTE] Iniciando backteste: {symbol} {interval}min")
-        print(f"[BACKTESTE] Período: {start_date or 'início'} até {end_date or 'fim'}")
+        # Se não passar data, define os últimos 90 dias
+        if not start_date:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=90)
+        elif not end_date:
+            end_date = datetime.now()
+
+        print(f"\n[BACKTESTE] Iniciando período de 90 dias: {symbol} {interval}min")
+        print(f"[BACKTESTE] {start_date.strftime('%d/%m/%Y')} -> {end_date.strftime('%d/%m/%Y')}")
         
         # Obter candles
         if start_date and end_date:
@@ -186,17 +190,21 @@ class Backtester:
         
         # Simular cada candle
         for i, candle in enumerate(candles):
-            # Detectar setup
-            if setup_detector and i > 20:
-                direction = setup_detector(candles[:i+1])
+            if self.active_trade is not None:
+                self._update_active_trades(candle)
+                if self.active_trade is None:
+                    last_exit_index = i
+                    continue
                 
-                if direction:
-                    trade = self._create_trade(symbol, candle, direction)
-                    self.trades.append(trade)
-                    print(f"[TRADE] #{len(self.trades)}: {direction.value} @ ${candle.close:.2f}")
+            if i < last_exit_index + 12:
+                continue
             
-            # Verificar se trades ativas atingem TP ou SL
-            self._update_active_trades(candle)
+            if setup_detector and i > 20 and self.active_trade is None:
+                direction = setup_detector(candles[max(0, i-200):i+1])
+                if direction:
+                    self.active_trade = self._create_trade(symbol, candle, direction)
+                    self.trades.append(self.active_trade)
+                    print(f"[TRADE] #{len(self.trades)}: {direction.value} @ ${candle.close:.2f}")
         
         # Calcular estatísticas
         for trade in self.trades:
@@ -216,7 +224,17 @@ class Backtester:
         """Cria uma nova trade"""
         entry_price = candle.close
         stop_loss = self.sl_calculator.calculate(entry_price, direction)
-        tps = self.tp_calculator.calculate(entry_price, direction)
+        
+        if abs(entry_price - stop_loss) < (entry_price * 0.001): # Mínimo 0.1% de distância
+            # Força um stop mínimo para o backtest não bugar
+            dist = entry_price * 0.005 # 0.5%
+            stop_loss = entry_price - dist if direction == TradeDirection.LONG else entry_price + dist
+        
+        tps = self.tp_calculator.calculate_adaptive_tps(
+            entry_price=entry_price, 
+            stop_loss=stop_loss, 
+            direction=direction
+        )
         
         # Calcular tamanho da posição
         stop_distance = abs(entry_price - stop_loss)
@@ -234,42 +252,71 @@ class Backtester:
             take_profits=[tp.price for tp in tps]
         )
         
+        trade.hit_tps = set()
+        
         return trade
     
     def _update_active_trades(self, candle: CandleData):
-        """Verifica se trades ativas atingem TP ou SL"""
-        for trade in self.trades:
-            if trade.exit_time > 0:
-                continue  # Já foi fechada
+        if not self.active_trade:
+            return
+        
+        trade = self.active_trade
+        
+        if not hasattr(trade, 'hit_tps'):
+            trade.hit_tps = set()
+        
+        # --- SEÇÃO 1: ATUALIZAÇÃO DE ESTADO E PROTEÇÃO ---
+        for i, tp_price in enumerate(trade.take_profits):
+            tp_level = i + 1
             
-            # Verificar SL
+            # Lógica corrigida: verifica a condição baseada na direção
             if trade.direction == TradeDirection.LONG:
-                if candle.low <= trade.stop_loss:
-                    trade.exit_price = trade.stop_loss
-                    trade.exit_time = candle.timestamp
-                    trade.exit_reason = "Stop Loss"
-                    continue
-            else:  # SHORT
-                if candle.high >= trade.stop_loss:
-                    trade.exit_price = trade.stop_loss
-                    trade.exit_time = candle.timestamp
-                    trade.exit_reason = "Stop Loss"
-                    continue
+                hit_this_tp = candle.high >= tp_price
+            else: # SHORT
+                hit_this_tp = candle.low <= tp_price
+
+            if hit_this_tp and tp_level not in trade.hit_tps:
+                trade.hit_tps.add(tp_level)
+                
+                # Mover para Breakeven apenas no TP2
+                if tp_level == 2:
+                    trade.stop_loss = trade.entry_price
+                    trade.is_protected = True
+                    print(f"[PROTECTION] TP2 atingido. Stop em Breakeven: {trade.stop_loss}")
+
+                # Se for o ÚLTIMO TP da lista, fecha a trade agora
+                if tp_level == len(trade.take_profits):
+                    self._close_trade(trade, candle, tp_price, f"TP{tp_level}")
+                    return # Sai da função, a trade acabou
+
+        # --- SEÇÃO 2: VERIFICAÇÃO DE STOP LOSS ---
+        # Só chegamos aqui se a trade NÃO foi fechada pelo TP final acima
+        exit_sl = False
+        if trade.direction == TradeDirection.LONG:
+            if candle.low <= trade.stop_loss:
+                exit_sl = True
+        else: # SHORT
+            if candle.high >= trade.stop_loss:
+                exit_sl = True
+
+        if exit_sl:
+            # Se o stop loss foi movido (is_protected), o motivo é "BREAKEVEN"
+            reason = "BREAKEVEN" if trade.is_protected else "STOP_LOSS"
+            self._close_trade(trade, candle, trade.stop_loss, reason)
             
-            # Verificar TPs - fecha no primeiro atingido
-            for i, tp_price in enumerate(trade.take_profits):
-                if trade.direction == TradeDirection.LONG:
-                    if candle.high >= tp_price:
-                        trade.exit_price = tp_price
-                        trade.exit_time = candle.timestamp
-                        trade.exit_reason = f"TP{i+1}"
-                        break
-                else:  # SHORT
-                    if candle.low <= tp_price:
-                        trade.exit_price = tp_price
-                        trade.exit_time = candle.timestamp
-                        trade.exit_reason = f"TP{i+1}"
-                        break
+    def _close_trade(self, trade, candle, exit_price, reason):
+        trade.exit_price = exit_price
+        trade.exit_time = candle.timestamp
+        trade.exit_reason = reason
+
+        if trade.direction == TradeDirection.LONG:
+            pnl = (exit_price - trade.entry_price) * trade.position_size
+        else:
+            pnl = (trade.entry_price - exit_price) * trade.position_size
+
+        self.active_trade = None
+        
+        print(f"[EXIT] {trade.direction.value.upper()} @ ${exit_price:.2f} | Razão: {reason} | PnL: ${pnl:.2f}")
     
     def save_trades_to_csv(self, filename: str = "backteste_trades.csv"):
         """Salva trades em CSV"""
@@ -314,3 +361,13 @@ class Backtester:
             json.dump(stats_dict, f, indent=2)
         
         print(f"[OK] Estatísticas salvas em {filepath}")
+    
+    def log_benchmark(self, version_name: str):
+        """Salva um resumo rápido para comparar versões do código"""
+        log_path = Path("logs/benchmark_results.txt")
+        with open(log_path, "a") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M')} | "
+                    f"Versão: {version_name} | "
+                    f"WinRate: {self.stats.win_rate:.1f}% | "
+                    f"PnL: ${self.stats.total_pnl:.2f} | "
+                    f"DD: ${self.stats.max_drawdown:.2f}\n")

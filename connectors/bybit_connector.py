@@ -1,9 +1,3 @@
-"""
-Connector Bybit API
-Comunicação segura com Bybit Demo API
-IMPORTANTE: Usa API demo, não testnet
-"""
-
 import logging
 import os
 import json
@@ -109,19 +103,11 @@ class BybitConnector:
         account = result.get("result", {})
         return account
     
-    def get_klines(self, symbol: str, interval: str, limit: int = 200) -> List[Dict]:
+    def get_klines(self, symbol: str, interval: str, limit: int = 200, 
+                   start_time: Optional[int] = None, end_time: Optional[int] = None) -> List[List]:
         """
-        Busca candles (klines) históricos
-        
-        Args:
-            symbol: BTCUSDT
-            interval: 5m, 15m, 1h, etc
-            limit: número de candles (máximo 200)
-        
-        Returns:
-            Lista de candles com [open_time, open, high, low, close, volume]
+        Busca candles (klines) históricos com suporte a períodos específicos
         """
-        # Normaliza o intervalo para o formato Bybit V5
         interval_map = {
             "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
             "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
@@ -133,18 +119,24 @@ class BybitConnector:
             "category": "linear",
             "symbol": symbol,
             "interval": interval,
-            "limit": min(limit, 200),
+            "limit": limit, # Removi o min(limit, 200) para aceitar até 1000 se necessário
         }
         
+        # Adiciona filtros de tempo se fornecidos
+        if start_time:
+            params["start"] = start_time
+        if end_time:
+            params["end"] = end_time
+        
         result = self._request("GET", "/v5/market/kline", params=params)
-        print(f"get_klines: {result}")
         
         if result.get("retCode") == 0:
             klines = result.get("result", {}).get("list", [])
-            print(f"get_klines - klines: {klines}")
-            # Bybit retorna em formato: [time, open, high, low, close, volume, turnover]
-            return klines
+            # A Bybit retorna do mais novo para o mais antigo. 
+            # Para backtest, geralmente revertemos para ordem cronológica.
+            return klines[::-1] 
         
+        self.logger.error(f"Erro ao buscar klines: {result.get('retMsg')}")
         return []
     
     def get_latest_price(self, symbol: str) -> Optional[float]:
@@ -166,26 +158,14 @@ class BybitConnector:
     def place_order(self, symbol: str, side: str, order_type: str,
                    quantity: float, price: float = None,
                    timeout_seconds: int = 30) -> str:
-        """
-        Coloca ordem
         
-        Args:
-            symbol: BTCUSDT
-            side: BUY ou SELL
-            order_type: MARKET ou LIMIT
-            quantity: quantidade em BTC
-            price: preço (obrigatório para LIMIT)
-        
-        Returns:
-            order_id
-        """
         data = {
             "category": "linear",
             "symbol": symbol,
             "side": side,
             "orderType": order_type,
             "qty": str(quantity),
-            "timeInForce": "IOC",  # Imediato ou cancelado
+            "timeInForce": "IOC",
         }
         
         if order_type == "LIMIT" and price:
@@ -211,22 +191,81 @@ class BybitConnector:
         result = self._request("POST", "/v5/order/amend", data=data)
         return result.get("retCode") == 0
     
-    def set_take_profits(self, symbol: str, order_id: str, 
-                        tp_levels: Dict) -> bool:
+    def set_trading_stop(self, symbol: str, stop_loss: float, side: str):
         """
-        Define múltiplos take profits
-        
-        Args:
-            tp_levels: {
-                "tp1": {"price": float, "percent": int},
-                "tp2": {"price": float, "percent": int},
-                "tp3": {"price": float, "percent": int},
+        Atualiza o Stop Loss de uma posição ativa na Bybit V5.
+        """
+        try:
+            payload = {
+                "category": "linear",
+                "symbol": symbol,
+                "stopLoss": str(stop_loss),
+                "slTriggerBy": "LastPrice",
+                "tpslMode": "Full",
+                "positionIdx": 0 # 0 para unidirecional, 1 para Hedge (Buy), 2 para Hedge (Sell)
             }
+            
+            # O endpoint da V5 para modificar posições
+            endpoint = "/v5/position/trading-stop"
+            
+            # Aqui você usaria a lógica interna do seu conector para assinar e enviar
+            response = self._request("POST", endpoint, data=payload)
+            
+            if response and response.get("retCode") == 0:
+                self.logger.info(f"✅ SL atualizado na Bybit para {symbol}: {stop_loss}")
+                return True
+            else:
+                error_msg = response.get("retMsg") if response else "Sem resposta"
+                self.logger.error(f"❌ Erro ao atualizar SL na Bybit: {error_msg}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Falha na comunicação com Bybit para Trading Stop: {e}")
+            return False
+    
+    def set_take_profits(self, symbol: str, side: str, total_qty: float, 
+                          tp_levels: List) -> bool:
         """
-        # Implementar lógica de TP múltiplos em Bybit
-        # Bybit suporta TP via ordens, ou previsões
+        Cria ordens LIMIT individuais para cada nível de Take Profit.
+        Args:
+            symbol: Ex: "BTCUSDT"
+            side: "Buy" (se você abriu um Long) ou "Sell" (se abriu um Short)
+            total_qty: Quantidade total da posição aberta
+            tp_levels: Lista de objetos TakeProfitLevel (do seu calculator)
+        """
+        # Se você comprou (Buy), o TP deve ser uma ordem de venda (Sell)
+        exit_side = "Sell" if side == "Buy" else "Buy"
         
-        return True  # Placeholder
+        success_count = 0
+        
+        for tp in tp_levels:
+            # Calcula a quantidade exata para este nível de TP
+            tp_qty = total_qty * tp.volume_percent
+            
+            # Formata para string respeitando a precisão (Bybit rejeita se houver muitos decimais)
+            # Dica: use round(tp_qty, 3) ou conforme o símbolo
+            
+            data = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": exit_side,
+                "orderType": "LIMIT",
+                "qty": str(tp_qty),
+                "price": str(round(tp.price, 2)),
+                "timeInForce": "GTC", # Good Till Cancelled
+                "reduceOnly": True,    # CRÍTICO: Garante que a ordem apenas fecha posição
+                "positionIdx": 0       # 0 para modo unidirecional
+            }
+            
+            result = self._request("POST", "/v5/order/create", data=data)
+            
+            if result.get("retCode") == 0:
+                self.logger.info(f"✅ Ordem de {tp.label} enviada: {tp.price} (Qtd: {tp_qty})")
+                success_count += 1
+            else:
+                self.logger.error(f"❌ Erro ao enviar {tp.label}: {result.get('retMsg')}")
+        
+        return success_count == len(tp_levels)
     
     def close_position(self, symbol: str, trade_id: str) -> bool:
         """Fecha posição"""
@@ -250,12 +289,6 @@ class BybitConnector:
     
     def get_closed_orders(self, symbol: str = None, limit: int = 50) -> List[Dict]:
         """
-        Retorna histórico de ordens fechadas (trades executadas)
-        
-        Args:
-            symbol: BTCUSDT (opcional, busca todos se não informado)
-            limit: número máximo de ordens (padrão 50)
-        
         Returns:
             Lista de ordens fechadas com [orderId, symbol, side, orderPrice, orderQty, cumExecQty, status, createdTime, updatedTime]
         """
@@ -280,12 +313,6 @@ class BybitConnector:
     
     def get_trade_history(self, symbol: str = None, limit: int = 50) -> List[Dict]:
         """
-        Retorna histórico de execução de trades (fills/executions)
-        
-        Args:
-            symbol: BTCUSDT (opcional)
-            limit: número máximo (padrão 50)
-        
         Returns:
             Lista de execuções com [execId, orderId, symbol, side, execPrice, execQty, execTime, feeRate, tradingFee, execType]
         """

@@ -1,9 +1,3 @@
-"""
-Agente de Gerenciamento de Risco
-Calcula sizing, stops, TPs, valida RR
-Essencial: Position Sizing e Risk Management são a ESTRATÉGIA
-"""
-
 import logging
 from typing import Optional, Dict, Tuple
 from models.trade_models import Trade, SetupSignal, PositionSize, TradeDirection
@@ -11,17 +5,7 @@ from core.position_sizing import PositionSizer
 from core.volatility import VolatilityCalculator
 from config.settings import MIN_RR_RATIO, RISK_PER_TRADE_PERCENT, ACCOUNT_SIZE_USDT
 
-
 class RiskManagementAgent:
-    """
-    Agente responsável por:
-    - Calcular tamanho da posição
-    - Definir stops e take profits
-    - Validar RR ratio
-    - Gerenciar risco por trade
-    - Manter disciplina de sizing
-    """
-    
     def __init__(self, agent_id: str = "RM-001"):
         self.agent_id = agent_id
         self.logger = logging.getLogger(f"{self.__class__.__name__}_{agent_id}")
@@ -38,11 +22,6 @@ class RiskManagementAgent:
     
     def calculate_trade_setup(self, signal: SetupSignal, candle_data: Dict,
                              volatility_data = None) -> Optional[Trade]:
-        """
-        Cria setup de trade completo baseado no sinal
-        
-        Retorna Trade com entry, stops, TPs todos calculados
-        """
         trade = Trade(
             symbol="BTCUSDT",
             direction=signal.direction,
@@ -126,12 +105,6 @@ class RiskManagementAgent:
         return trade
     
     def validate_trade_risk(self, trade: Trade) -> Tuple[bool, str]:
-        """
-        Valida se a trade segue regras de risco
-        
-        Returns:
-            (é_válido: bool, mensagem: str)
-        """
         # Regra 1: RR mínimo
         if trade.rr_ratio < MIN_RR_RATIO:
             return False, f"RR baixo: {trade.rr_ratio:.2f}x (min: {MIN_RR_RATIO}x)"
@@ -160,7 +133,6 @@ class RiskManagementAgent:
         return True, "Trade válida"
     
     def _get_average_recent_size(self) -> float:
-        """Retorna size médio das últimas 5 trades"""
         if not self.sizing_history:
             return 0.0
         
@@ -168,22 +140,17 @@ class RiskManagementAgent:
         return sum(recent) / len(recent)
     
     def record_trade_execution(self, trade: Trade):
-        """Registra execução da trade para histório de sizing"""
         self.sizing_history.append(trade.entry_size)
         if len(self.sizing_history) > 100:
             self.sizing_history = self.sizing_history[-100:]
     
     def record_trade_result(self, trade: Trade):
-        """Registra resultado da trade"""
         if not trade.is_profitable:
             self.consecutive_losses += 1
         else:
             self.consecutive_losses = 0
     
     def should_pause_trading(self) -> Tuple[bool, str]:
-        """
-        Verifica se deve pausar trading (regra de disciplina)
-        """
         from config.settings import STOP_AFTER_2_LOSSES
         
         if STOP_AFTER_2_LOSSES and self.consecutive_losses >= 2:
@@ -192,7 +159,6 @@ class RiskManagementAgent:
         return False, ""
     
     def get_position_summary(self, trade: Trade) -> str:
-        """Retorna resumo da posição formatado"""
         return (
             f"BTC: {trade.entry_size:.4f} | "
             f"Entry: ${trade.entry_price:.2f} | "
@@ -203,9 +169,25 @@ class RiskManagementAgent:
         )
     
     def get_agent_status(self) -> str:
-        """Retorna status do agente"""
         return (
             f"Agent: {self.agent_id} | "
             f"Consecutive losses: {self.consecutive_losses} | "
             f"Avg recent size: {self._get_average_recent_size():.4f} BTC"
         )
+        
+    def check_breakeven_trigger(self, current_price: float, position: dict) -> bool:
+        if position.get('is_breakeven', False):
+            return False
+            
+        entry = position['entry_price']
+        tp1 = position['tp1_price']
+        side = position['side'].lower()
+        
+        if side == 'long':
+            if current_price >= tp1:
+                return True
+        elif side == 'short':
+            if current_price <= tp1:
+                return True
+                
+        return False
